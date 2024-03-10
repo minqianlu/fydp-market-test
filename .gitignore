@@ -1,1 +1,6 @@
 /node_modules
+/node_modules_old
+package-lock.json
+package_old.json
+package_old-lock.json
+yarn_old.lock
