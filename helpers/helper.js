@@ -1,16 +1,11 @@
-const { initKeypom, createDrop, getEnv, formatLinkdropUrl, getPubFromSecret, getKeyInformation, generateKeys } = require("@keypom/core"); 
-const { parseNearAmount, formatNearAmount } = require("@near-js/utils");
-const { UnencryptedFileSystemKeyStore } = require("@near-js/keystores-node");
-
-//const { KeyStore, InMemoryKeyStore } = require("@near-js/keystores");
-const { InMemoryKeyStore} = require("near-api-js")
-const { Near } = require("@near-js/wallet-account");
-const { Account } = require("@near-js/accounts");
+const { Near, keyStores, Account, KeyPair, utils, UnencryptedFileSystemKeyStore} = require("near-api-js")
 const signer = require('nacl-signature');
+var nacl = require('tweetnacl');
+nacl.util = require('tweetnacl-util');
+//var ed25519 = require('ed25519');
 const bs58 = require('bs58');
 const path = require("path");
 const { assert } = require("console");
-const { KeyPair } = require("@near-js/crypto");
 const homedir = require("os").homedir();
 require('dotenv').config();
 
@@ -25,12 +20,18 @@ async function buyTickets({
     attached_deposit, 
     attendeeAccount
 }){
-    let ticket_key = await generateKeys({numKeys});
-    
-    let new_keys = []  
-    for(let key of ticket_key.publicKeys){
-        new_keys.push({
-            public_key: key,
+
+    let keys = []
+    for(let i = 0; i < numKeys; i++){
+        let keyPair = KeyPair.fromRandom('ed25519');
+        keys.push(keyPair)
+    }
+
+    let tickets = []  
+    let raw_keys = []
+    for(let key of keys){
+        tickets.push({
+            public_key: key.publicKey.toString(),
             key_owner: attendeeAccount.accountId
         })
     }
@@ -41,40 +42,17 @@ async function buyTickets({
         args: {
             event_id,
             drop_id,
-            new_keys,
+            new_keys: tickets,
         }, 
         gas: "300000000000000",
-        attachedDeposit: parseNearAmount(attached_deposit.toString())
+        attachedDeposit: utils.format.parseNearAmount(attached_deposit.toString())
     })
 
-    return new_keys
+    return [tickets, keys]
 }
 
-//async function buyResale()
-
-async function testSignature(attendeeAccount){
-    // Example usage
-    const secretKey = "Zo8dtg13eVB8rpg7zFGvLkPBob6eZx7D9LTxX9WjtUAnQLF2Ksv4pVwQ1GczhtB3jWM1a6LE2qE233mRYAHZP5N";
-    const publicKey = "3BNLBGiWD15bpxWZKvM5PUCmo5Xk6bd8gBHhbMNSAokg";
-
-    const sk_bytes = bs58.decode(secretKey);
-    const pk_bytes = bs58.decode(publicKey);
-
-    const sk_64 = Buffer.from(sk_bytes).toString('base64');
-    const pk_64 = Buffer.from(pk_bytes).toString('base64');
-
-    try{
-        const signature = signer.sign("Hello, world!", sk_64);
-        console.log(signature);
-        console.log(signer.verify("Hello, world!", signature, pk_64));
-    }catch(e){
-        console.log(e)
-    }
-}
-
-async function generateKeypomSignature(attendeeAccount, publicKey, b58_signing_sk){
-
-    let sk_bytes = bs58.decode(b58_signing_sk)
+async function generateSignature(attendeeAccount, keypair){
+    let sk_bytes = bs58.decode(keypair.extendedSecretKey)
     const secret_key = Buffer.from(sk_bytes).toString('base64');
 
     let signing_message = await attendeeAccount.viewFunction({
@@ -82,52 +60,38 @@ async function generateKeypomSignature(attendeeAccount, publicKey, b58_signing_s
         methodName: "get_signing_message",
         args:{}
     })
-
     let key_info = await attendeeAccount.viewFunction({
         contractId: KEYPOM, 
         methodName: "get_key_information",
         args:{
-            key: publicKey
+            key: keypair.publicKey.toString()
         }
     })
     let message_nonce = key_info.message_nonce
 
-    let message = signing_message + message_nonce
+    let message = `${signing_message}${message_nonce.toString()}`
+    let message_bytes = new TextEncoder().encode(`${message}`)
 
-    const signature = signer.sign(message, secret_key);
+    console.log("js message bytes ", message_bytes)
 
-    return signature
+    const signature = nacl.sign.detached(message_bytes, sk_bytes);
+    // const isValid = nacl.sign.detached.verify(message_bytes, signature, keypair.publicKey.data)
+    // console.log("js verify: ", isValid)
+    const base64_signature = nacl.util.encodeBase64(signature)
+
+    return [base64_signature, signature]
 }
 
-async function testKeypomSign(attendeeAccount){
-     // Get contract sk, signing message, and key message nonce, then generate signature
-
-     let b58_signing_sk = await attendeeAccount.viewFunction({
-        contractId: KEYPOM, 
-        methodName: "get_global_secret_key",
-        args:{}
-    })
-
-    let keys = KeyPair.fromString("ed25519:" + b58_signing_sk)
-
-    console.log(keys)
-    
-    // create keypom account instance using above keypair, then sign nft_approve using it!!!
-    const keypomAccount = new Account(attendeeAccount.connection, KEYPOM);
-    
-    const inMemoryKeyStore = new InMemoryKeyStore()
-    inMemoryKeyStore.setKey(keypomAccount.networkId, keypomAccount.accountId, keys)
-}
-
-async function listTicket(price, publicKey, attendeeAccount){
+async function listTicket(price, keypair, attendeeAccount){
     let b58_signing_sk = await attendeeAccount.viewFunction({
         contractId: KEYPOM, 
         methodName: "get_global_secret_key",
         args:{}
     })
-    let keypomKey = KeyPair.fromString("ed25519:" + b58_signing_sk)
 
-    let keyStore2 = new InMemoryKeyStore()
+    let keypomKey = KeyPair.fromString(b58_signing_sk)
+
+    let keyStore2 = new keyStores.InMemoryKeyStore()
     keyStore2.setKey(network, KEYPOM, keypomKey)
 
     let nearConfig2 = {
@@ -143,35 +107,39 @@ async function listTicket(price, publicKey, attendeeAccount){
 
     let keypomAccount = new Account(near2.connection, KEYPOM);
 
-    let signature = await generateKeypomSignature(attendeeAccount, publicKey, b58_signing_sk)
+    let [base64_signature, signature] = await generateSignature(attendeeAccount, keypair)
 
-    console.log(signature)
+    console.log("Signature: ", base64_signature)
+    console.log("Base 64 version: ", base64_signature)
+    console.log("post-sig")
     let msg_json = {
-        linkdrop_pk: publicKey,
-        signature,
+        linkdrop_pk: keypair.publicKey.toString(),
+        signature: base64_signature,
         msg:JSON.stringify({
-            public_key: publicKey,
-            price: parseNearAmount(price.toString())
+            public_key: keypair.publicKey.toString(),
+            price: utils.format.parseNearAmount(price.toString())
         })
     }
-    
+    let msg = JSON.stringify(msg_json)
+    console.log(typeof msg)
+    console.log("pre-nft-approve")
     await keypomAccount.functionCall({
         contractId: KEYPOM, 
         methodName: 'nft_approve', 
         args: {
             account_id: MARKETPLACE,
-            msg: JSON.stringify(msg_json)
+            msg
         }, 
         gas: "300000000000000",
-        attachedDeposit: parseNearAmount("1")
     })
+    console.log("post-nft-approve")
 }
 
 async function logBalances(attendeeAccount, fundingAccount){
     let a_balance = (await attendeeAccount.getAccountBalance()).available;
-    console.log(`Attendee balance: ${formatNearAmount(a_balance.toString())}`)
+    console.log(`Attendee balance: ${utils.format.formatNearAmount(a_balance.toString())}`)
     let s_balance = (await fundingAccount.getAccountBalance()).available;
-    console.log(`Seller balance: ${formatNearAmount(s_balance.toString())}`)
+    console.log(`Seller balance: ${utils.format.formatNearAmount(s_balance.toString())}`)
 }
 
 async function getOwnedTickets(attendeeAccount){
@@ -212,6 +180,4 @@ module.exports = {
     getOwnedTickets,
     changeMarketplaceMaxMetadataBytes,
     listTicket,
-    testSignature,
-    testKeypomSign
 }

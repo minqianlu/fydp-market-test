@@ -8,7 +8,7 @@ const { assert } = require("console");
 const homedir = require("os").homedir();
 require('dotenv').config();
 
-const { buyTickets, logBalances, getOwnedTickets, changeMarketplaceMaxMetadataBytes, listTicket } = require("../helpers/helper");
+const { buyTickets, logBalances, getOwnedTickets, changeMarketplaceMaxMetadataBytes, listTicket } = require("../helpers/helper.js");
 
 async function initialSale(){
 	// Initiate connection to the NEAR blockchain.

@@ -1,16 +1,11 @@
-const { initKeypom, createDrop, getEnv, formatLinkdropUrl, getPubFromSecret, getKeyInformation, generateKeys } = require("@keypom/core"); 
-const { parseNearAmount, formatNearAmount } = require("@near-js/utils");
-const { UnencryptedFileSystemKeyStore } = require("@near-js/keystores-node");
-const { Near } = require("@near-js/wallet-account");
-const { Account } = require("@near-js/accounts");
-//const { InMemoryKeyStore } = require("@near-js/keystores");
+
+const { keyStores, Near, Account, KeyPair, utils } = require("near-api-js")
 const path = require("path");
 const { assert } = require("console");
 const homedir = require("os").homedir();
 require('dotenv').config();
 
-const { buyTickets, logBalances, getOwnedTickets, changeMarketplaceMaxMetadataBytes, listTicket, testSignature, testKeypomSign } = require("../helpers/helper");
-const { KeyPair } = require("@near-js/crypto");
+const { buyTickets, logBalances, getOwnedTickets, changeMarketplaceMaxMetadataBytes, listTicket, testSignature, testKeypomSign, generateKeypomSignature } = require("../helpers/helper.js");
 
 async function resales(){
 	// Initiate connection to the NEAR blockchain.
@@ -25,7 +20,7 @@ async function resales(){
     const funder = process.env.FUNDER;
     const attendee = process.env.ATTENDEE;
 
-	let keyStore = new UnencryptedFileSystemKeyStore(credentialsPath);
+	let keyStore = new keyStores.UnencryptedFileSystemKeyStore(credentialsPath);
 
 	let nearConfig = {
 	    networkId: network,
@@ -38,13 +33,9 @@ async function resales(){
 
 	let near = new Near(nearConfig);
 
-    await initKeypom({
-	    near,
-	    network
-	});
-
 	const fundingAccount = new Account(near.connection, funder);
     const attendeeAccount = new Account(near.connection, attendee);
+    const minqi = new Account(near.connection, "mintlu.testnet");
     const marketplaceAccount = new Account(near.connection, MARKETPLACE);
     const keypomAccount = new Account(near.connection, KEYPOM);
 
@@ -66,69 +57,26 @@ async function resales(){
     let owned_tix = await getOwnedTickets(attendeeAccount);
 
     // EACH TICKET COSTS 1 NEAR
-    // TODO: SIGNATURE NEEDED FOR RESALES
-
-
-    console.log("~~~~~~~~~~~~~~~ Listing Non-existent ticket ~~~~~~~~~~~~~~~")
-    console.log("Balances prior to purchase")
-    logBalances(attendeeAccount, fundingAccount)
-
-    let tickets;
-    let pre_test_owned_tix = owned_tix.length
-    try{
-        // Try to buy tickets for less than they cost
-        tickets = await buyTickets({
-            event_id, 
-            drop_id, 
-            numKeys: 1, 
-            attached_deposit: 1, 
-            attendeeAccount
-        })
-        
-        owned_tix = await getOwnedTickets(attendeeAccount)
-        console.log(`Owned tickets: ${owned_tix.length}`)
-        assert(owned_tix.length - pre_test_owned_tix == 1, "Expected to have 1 more ticket")
-        console.log("Balances after buying ticket to resell")
-        logBalances(attendeeAccount, fundingAccount)
-    }catch(e){
-       console.warn("Buying for resale has failed!: ", e)
-    }
-
-    console.log(tickets[0].public_key)
-
-    let public_key = tickets[0].public_key
-
-    try{
-        // Try listing for higher than marketplace allows for
-        await listTicket(10, public_key, attendeeAccount)
-        console.warn("Listing ticket has succeeded when it should not have!")
-    }catch(e){
-        console.log(e)
-        event_resales = await attendeeAccount.viewFunction({
-            contractId: MARKETPLACE, 
-            methodName: "get_resales_per_event",
-            args:{
-                event_id
-            }
-        })
-        console.log(`Resales: ${event_resales.length}`)
-        assert(event_resales.length == 0, "Expected to have 0 resales")
-    }
-
-    // console.log("~~~~~~~~~~~~~~~ Buying then selling Tickets ~~~~~~~~~~~~~~~")
+    
+    // console.log("~~~~~~~~~~~~~~~ Legit ticket resell ~~~~~~~~~~~~~~~")
     // console.log("Balances prior to purchase")
     // logBalances(attendeeAccount, fundingAccount)
+
     // let tickets;
+    // let keypairs;
     // let pre_test_owned_tix = owned_tix.length
     // try{
     //     // Try to buy tickets for less than they cost
-    //     tickets = await buyTickets({
+    //     let buyTicketsRes = await buyTickets({
     //         event_id, 
     //         drop_id, 
     //         numKeys: 1, 
     //         attached_deposit: 1, 
     //         attendeeAccount
     //     })
+
+    //     tickets = buyTicketsRes[0]
+    //     keypairs = buyTicketsRes[1]
         
     //     owned_tix = await getOwnedTickets(attendeeAccount)
     //     console.log(`Owned tickets: ${owned_tix.length}`)
@@ -139,16 +87,17 @@ async function resales(){
     //    console.warn("Buying for resale has failed!: ", e)
     // }
 
-
-    // let event_resales = []
-    // console.log("~~~~~~~~~~~~~~~ Listing for higher than max ~~~~~~~~~~~~~~~")
-    // console.log("Balances prior to purchase")
+    // let old_resales = await attendeeAccount.viewFunction({
+    //     contractId: MARKETPLACE, 
+    //     methodName: "get_resales_per_event",
+    //     args:{
+    //         event_id
+    //     }
+    // })
 
     // try{
-    //     // Try listing for higher than marketplace allows for
-    //     await listTicket(10, tickets[0].public_key, attendeeAccount)
-    //     console.warn("Listing ticket has succeeded when it should not have!")
-    // }catch(e){
+    //     // Try listing for within marketplace rules
+    //     await listTicket(1.2, keypairs[0], attendeeAccount)
     //     event_resales = await attendeeAccount.viewFunction({
     //         contractId: MARKETPLACE, 
     //         methodName: "get_resales_per_event",
@@ -157,56 +106,52 @@ async function resales(){
     //         }
     //     })
     //     console.log(`Resales: ${event_resales.length}`)
-    //     assert(event_resales.length == 0, "Expected to have 0 resales")
-    // }
-    
-    // // List for a normal price
-    // console.log("~~~~~~~~~~~~~~~ Normal Listing ~~~~~~~~~~~~~~~")
-    // console.log("Balances prior to purchase")
-
-    // try{
-    //     await listTicket(1.5, tickets[0].public_key, attendeeAccount)
-    //     event_resales = await attendeeAccount.viewFunction({
-    //         contractId: MARKETPLACE, 
-    //         methodName: "get_resales_per_event",
-    //         args:{
-    //             event_id
-    //         }
-    //     })
-    //     console.log(`Resales: ${event_resales.length}`)
-    //     assert(event_resales.length == 1, "Expected to have 1 resales")
+    //     assert(old_resales.length - event_resales.length == 1, "Expected to have 0 resales")
     // }catch(e){
-    //     console.warn("Listing ticket has failed!: ", e)
+    //     console.log(e)
+    //     console.warn("Listing ticket failed!")
     // }
 
+    console.log("~~~~~~~~~~~~~~~ Buying Resale Tickets ~~~~~~~~~~~~~~~")
+    console.log("Balances prior to purchase")
+    logBalances(attendeeAccount, fundingAccount)
+    logBalances(minqi, fundingAccount)
+    try{
+        let new_key = KeyPair.fromRandom('ed25519')
+        let new_public_key = new_key.publicKey.toString()
 
+        let memo = {
+            linkdrop_pk: "ed25519:3mGGeCp37RqdAJxu96PTNE1n1bE3X9tFufmPbdVDuVQE",
+            new_public_key
+        }
 
+        let minqi_pre_test_owned_tix = await getOwnedTickets(minqi)
+        let attendee_pre_test_owned_tix = await getOwnedTickets(attendeeAccount)
 
-
-
-
-    // console.log("~~~~~~~~~~~~~~~ Buying Resale Tickets ~~~~~~~~~~~~~~~")
-    // console.log("Balances prior to purchase")
-    // logBalances(attendeeAccount, fundingAccount)
-    // try{
-    //     // Try to buy tickets for less than they cost
-    //     await buyTickets({
-    //         event_id, 
-    //         drop_id, 
-    //         numKeys: 5, 
-    //         attached_deposit: 5, 
-    //         attendeeAccount
-    //     })
+        await minqi.functionCall({
+            contractId: MARKETPLACE, 
+            methodName: 'buy_resale',
+            args: {
+                drop_id,
+                memo,
+                new_owner: minqi.accountId,
+            },
+            attachedDeposit: utils.format.parseNearAmount("1.5"),
+            gas: "300000000000000"
+        })
         
-    //     owned_tix = await getOwnedTickets(attendeeAccount)
-    //     console.log(`Owned tickets: ${owned_tix.length}`)
-    //     assert(owned_tix.length == 6, "Expected to have 6 tickets")
+        owned_tix = await getOwnedTickets(attendeeAccount)
+        let minqi_owned_tix = await getOwnedTickets(minqi)
+        console.log(`Owned tickets: ${owned_tix.length}`)
+        assert(minqi_owned_tix.length - minqi_pre_test_owned_tix.length == 1, "Expected to have 1 ticket")
+        assert(attendee_pre_test_owned_tix - owned_tix.length == 1, "Expected to have 1 less ticket")
 
-    //     console.log("Balances after multiple ticket purchase")
-    //     logBalances(attendeeAccount, fundingAccount)
-    // }catch(e){
-    //    console.warn("Multiple ticket purchase has failed!: ", e)
-    // }
+        console.log("Balances after multiple ticket purchase")
+        logBalances(attendeeAccount, fundingAccount)
+        logBalances(minqi, fundingAccount)
+    }catch(e){
+       console.warn("Purchasing Resale has failed!: ", e)
+    }
 
 }
 resales()
